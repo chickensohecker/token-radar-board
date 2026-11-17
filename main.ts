@@ -14,6 +14,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSyn
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { boardIssue, buildRadar, dataScript, parseSnapshot } from './lib/model.ts';
+import { checkBoard, checkDossier } from './lib/validate.ts';
 import { buildDossier } from './vendor/makefun-board.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
@@ -45,6 +46,18 @@ const { board, radar } = buildRadar(snapshot);
 const issue = boardIssue(board, snapshot);
 if (issue !== null) {
   process.stderr.write(`token radar: the model wrote a board the gate refuses: ${issue}\n`);
+  process.exit(1);
+}
+
+// A second, independent pass over the board's shape, in this entry's own words:
+// if it finds anything the gate would refuse, stop before writing anything.
+const boardProblems = checkBoard(
+  board,
+  snapshot.watchlist,
+  new Set(snapshot.protocols.map((protocol) => protocol.slug)),
+);
+if (boardProblems.length > 0) {
+  for (const problem of boardProblems) process.stderr.write(`token radar: board self-check: ${problem}\n`);
   process.exit(1);
 }
 
@@ -81,7 +94,19 @@ for (const name of shots) {
 }
 
 // The dossier is written last: the scorer rebuilds it from this /output and compares bytes.
-writeFileSync(join(out, 'dossier.json'), buildDossier(out, { text_max_bytes: TEXT_MAX_BYTES, screenshots: SCREENSHOT_CAPS, dashboard: DASHBOARD_CAPS }));
+const dossierText = buildDossier(out, { text_max_bytes: TEXT_MAX_BYTES, screenshots: SCREENSHOT_CAPS, dashboard: DASHBOARD_CAPS });
+writeFileSync(join(out, 'dossier.json'), dossierText);
+
+// The written dossier must be byte-for-byte what the library builds from this same
+// output right now; a mismatch means the file on disk is stale or the build moved.
+const dossierProblems = checkDossier(
+  dossierText,
+  buildDossier(out, { text_max_bytes: TEXT_MAX_BYTES, screenshots: SCREENSHOT_CAPS, dashboard: DASHBOARD_CAPS }),
+);
+if (dossierProblems.length > 0) {
+  for (const problem of dossierProblems) process.stderr.write(`token radar: dossier self-check: ${problem}\n`);
+  process.exit(1);
+}
 
 process.stdout.write(
   `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.early_size} early, ${radar.live_size} live set aside)\n` +
